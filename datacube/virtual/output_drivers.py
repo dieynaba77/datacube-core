@@ -241,7 +241,6 @@ class OutputDriver(with_metaclass(RegisterDriver)):
         params.update(output_product.output_params)
         params.update(output_product.extras)
         params.update(kwargs)
-        print(params)
 
         output_path = Path(self._output_path,
                            output_product.file_path_template.format(**params))
@@ -284,7 +283,6 @@ class OutputDriver(with_metaclass(RegisterDriver)):
                                 valid_data=polygon_from_sources_extents(sources_, geobox))
         datasets = xr_apply(sources, _make_dataset, dtype='O')  # Store in DataArray to associate Time -> Dataset
         datasets = datasets_to_doc(datasets)
-        print(datasets)
         return datasets
 
 
@@ -372,7 +370,6 @@ class NetCDFCFOutputDriver(OutputDriver):
     def write_data(self, values):
         prod_name = self._output_product.name
         for var in values.data_vars:
-            print(var)
             self._output_file_handles[prod_name][var][:] = netcdf_writer.netcdfy_data(values[var].data)
             self._output_file_handles[prod_name].sync()
 

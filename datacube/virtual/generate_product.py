@@ -37,6 +37,22 @@ from .output_drivers import OutputDriver, OutputDriverResult
 
 _LOG = logging.getLogger(__name__)
 
+def ls8_on(dataset):
+    LS8_START_DATE = datetime(2013, 1, 1)
+    return dataset.center_time >= LS8_START_DATE 
+
+def ls7_on(dataset):
+    LS7_STOP_DATE = datetime(2003, 5, 31)
+    LS7_STOP_AGAIN = datetime(2013, 5, 31)
+    LS7_START_AGAIN = datetime(2010, 1, 1)
+    return dataset.center_time <= LS7_STOP_DATE or (dataset.center_time >= LS7_START_AGAIN and dataset.center_time <= LS7_STOP_AGAIN)
+
+def ls5_on(dataset):
+    LS5_START_AGAIN = datetime(2003, 1, 1)
+    LS5_STOP_DATE = datetime(1998, 12, 31)
+    LS5_STOP_AGAIN = datetime(2011, 12, 31)
+    return dataset.center_time <= LS5_STOP_DATE or (dataset.center_time >= LS5_START_AGAIN and dataset.center_time <= LS5_STOP_AGAIN)
+   
 def gather_tile_indexes(tile_index, tile_index_file):
     if tile_index is None and tile_index_file is None:
         return None
@@ -69,16 +85,19 @@ def gather_tile_indexes(tile_index, tile_index_file):
 @ui.pass_datacube(app_name='generate-product')
 
 def main(datacube, stats_config_file, tile_index, tile_index_file, output_location, year):
-   
-    config = normalize_config(read_config(stats_config_file),
-                              tile_index, tile_index_file, year, output_location)
+  
+    try:
+        config = normalize_config(read_config(stats_config_file),
+                                  tile_index, tile_index_file, year, output_location)
 
-    app = StatsApp(config, datacube)
-    app.generate_products()
+        app = StatsApp(config, datacube)
+        app.generate_products()
+    except Exception as e:
+        _LOG.error(e)
+        sys.exit(1)
 
-    if failed > 0:
-        raise click.ClickException('%s of %s tasks not completed successfully.' % (failed, successful + failed))
     return 0
+
 
 def read_config(config_file):
     _, config = next(read_documents(config_file))
@@ -206,6 +225,7 @@ class StatsApp:  # pylint: disable=too-many-instance-attributes
             query_string['y'] = (tile[1] * 100000, (tile[1] + 1) * 100000)
             query_string['time'] = (self.config_file['date_ranges']['start_date'], self.config_file['date_ranges']['end_date'])
             query_string['crs'] = definition['crs'] 
+            _LOG.debug("query string %s", query_string)
             datasets = virtual_product.query(dc, **query_string)
             grouped = virtual_product.group(datasets, **query_string) 
             start = pd.to_datetime(self.config_file['date_ranges']['start_date'])
@@ -229,7 +249,7 @@ class StatsApp:  # pylint: disable=too-many-instance-attributes
         for product in self.output_products.values():
             for output in product:
                 with output_driver(output_product = output) as output_file:
-                    resutls = output.compute(output.datasets)
+                    results = output.compute(output.datasets)
                     output_file.write_data(results)
 
     def configure_outputs(self, dc, metadata_type='eo') -> Dict[str, OutputProduct]:
