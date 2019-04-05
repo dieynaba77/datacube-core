@@ -1,11 +1,3 @@
-<<<<<<< HEAD
-# TODO: measurement dependency tracking
-# TODO: a mechanism to set settings for the leaf notes
-# TODO: lineage tracking per observation
-# TODO: integrate GridWorkflow functionality (spatial binning)
-
-=======
->>>>>>> 908a528a83210cb8c2edbb96d1ba6a37e0899d63
 """
 Implementation of virtual products. Provides an interface for the products in the datacube
 to query and to load data, and combinators to combine multiple products into "virtual"
@@ -70,11 +62,7 @@ class VirtualDatasetBox:
         return self.pile.shape + self.geobox.shape
 
     def __getitem__(self, chunk):
-<<<<<<< HEAD
-        # TODO: test this functionality
-=======
         # TODO: test this functionality, I don't think this works at all
->>>>>>> 908a528a83210cb8c2edbb96d1ba6a37e0899d63
         pile = self.pile
 
         return VirtualDatasetBox(_fast_slice(pile, chunk[:len(pile.shape)]),
@@ -210,29 +198,7 @@ class VirtualProduct(Mapping):
         """ Collection of datasets that match the query. """
         raise NotImplementedError
 
-<<<<<<< HEAD
-    @property
-    def _statistic(self) -> Transformation:
-        """ The `Transformation` object associated with an aggregate product. """
-        cls = self['aggregate']
-
-        try:
-            obj = cls(**{key: value for key, value in self.items()
-                         if key not in ['aggregate', 'input', 'group_by']})
-        except TypeError:
-            raise VirtualProductException("transformation {} could not be instantiated".format(cls))
-
-        self._assert(isinstance(obj, Transformation), "not a transformation object: {}".format(obj))
-
-        return cast(Transformation, obj)
-
-    @property
-    def _input(self) -> 'VirtualProduct':
-        """ The input product of a transform product. """
-        return VirtualProduct(self['input'])
-=======
     # no index access below this line
->>>>>>> 908a528a83210cb8c2edbb96d1ba6a37e0899d63
 
     def group(self, datasets: VirtualDatasetBag, **search_terms: Dict[str, Any]) -> VirtualDatasetBox:
         """
