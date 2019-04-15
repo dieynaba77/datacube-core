@@ -31,8 +31,8 @@ class OutputProduct:
         #: The ODC Product (formerly DatasetType)
         self.datasets = virtual_datasets
         self.product = virtual_product
-        output_measurements = [dict(output)
-                               for output in virtual_product.output_measurements(virtual_datasets.product_definitions)]
+        output_measurements = [output
+                               for output in virtual_product.output_measurements(virtual_datasets.product_definitions).values()]
 
         self.product_definition = self._create_product(metadata_type, product_type,
                                                        output_measurements, storage, custom_metadata)

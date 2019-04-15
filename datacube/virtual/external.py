@@ -84,30 +84,38 @@ class MangroveCC(Transformation):
         self.shape_file = shape_file
 
     def measurements(self, input_measurements):
-        return [Measurement(name=band, dtype='int16', nodata=0, units='1') for band in self.bands]
+        output_measurements = dict()
+        for band in self.bands:
+            output_measurements[band] = Measurement(name=band, dtype='int16', nodata=-1, units='1')
+        return output_measurements
 
     def compute(self, data):
         var_name = list(data.data_vars.keys())[0]
-        rast_data = data[var_name].where(self.generate_rasterize(data[var_name]) == 1)
-        rast_data.data[np.isnan(rast_data.data)] = 0
+
+        rast_data = data[var_name].where(data[var_name] > 0, -9999)
+        print('before raster', np.where(rast_data.data == -9999))
+        rast_data = rast_data.where(self.generate_rasterize(data[var_name]) == 1, -1)
+        print('after raster', np.where(rast_data.data == -9999))
 
         cover_extent = rast_data.copy(True)
-        cover_extent.data = np.zeros(cover_extent.shape, dtype='int16')
+        cover_extent.data = np.zeros(cover_extent.shape, dtype='int16') - 1  
         cover_extent.data[rast_data.data > self.thresholds[0]] = 1
+        cover_extent.data[rast_data.data == -9999] = 0 
 
         cover_type = rast_data.copy(True)
-        cover_type.data = np.zeros(cover_type.shape, dtype='int16')
+        cover_type.data = np.zeros(cover_type.shape, dtype='int16') - 1
         level_threshold = 1
         for s_t in self.thresholds:
             cover_type.data[rast_data.data > s_t] = level_threshold
             level_threshold += 1
+        cover_type.data[rast_data.data == -9999] = 0 
 
         outputs = {}
         outputs[self.bands[0]] = cover_extent
-        outputs[self.bands[0]].attrs['nodata'] = 0 
+        outputs[self.bands[0]].attrs['nodata'] = -1 
         outputs[self.bands[0]].attrs['units'] = 1 
         outputs[self.bands[1]] = cover_type
-        outputs[self.bands[1]].attrs['nodata'] = 0 
+        outputs[self.bands[1]].attrs['nodata'] = -1 
         outputs[self.bands[1]].attrs['units'] = 1 
         return xarray.Dataset(outputs, attrs=dict(crs=data.crs))
 

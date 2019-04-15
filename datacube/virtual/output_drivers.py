@@ -309,7 +309,7 @@ class NetCDFCFOutputDriver(OutputDriver):
         return Path(file_handle.filepath())
 
     def _create_storage_unit(self, output_product: OutputProduct, output_filename: Path):
-        all_measurement_defns = list(output_product.product.output_measurements(output_product.datasets.product_definitions))
+        all_measurement_defns = list(output_product.product.output_measurements(output_product.datasets.product_definitions).values())
 
         datasets = self._find_source_datasets(output_product, uri=output_filename.as_uri())
 
@@ -335,7 +335,7 @@ class NetCDFCFOutputDriver(OutputDriver):
         chunking = [chunking[dim] for dim in self._storage['dimension_order']]
 
         variable_params = {}
-        for measurement in output_product.product.output_measurements(output_product.datasets.product_definitions):
+        for measurement in output_product.product.output_measurements(output_product.datasets.product_definitions).values():
             name = measurement['name']
 
             if output_product.output_params is None:
