@@ -16,6 +16,11 @@ v1.7dev
 - Bug fix (Index out of bounds causing ingestion failures)
 - Add "virtual products" (:pull:`522`, :pull:`597`) for multi-product loading
 - Support indexing data directly from HTTP/HTTPS/S3 URLs (:pull:`607`)
+- Renamed `datacube metadata_type` to just `datacube metadata` (:pull:`692`)
+- More useful output from `datacube {product|metadata} {show|list}`
+- Add optional `progress_cbk` to `dc.load(_data)` (:pull:`702`), allows user to
+  monitor data loading progress.
+- Thread-safe netcdf access within `dc.load` (:pull:`705`)
 
 
 v1.6.1 (27 August 2018)

@@ -1,7 +1,13 @@
 import uuid
+<<<<<<< HEAD
 from collections import OrderedDict
 from itertools import groupby
 from typing import Union, Optional, Dict, Tuple
+=======
+from itertools import groupby
+from typing import Union, Optional, Dict, Tuple
+import datetime
+>>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
 
 import numpy
 import xarray
@@ -129,7 +135,12 @@ class Datacube(object):
     #: pylint: disable=too-many-arguments, too-many-locals
     def load(self, product=None, measurements=None, output_crs=None, resolution=None, resampling=None,
              skip_broken_datasets=False,
+<<<<<<< HEAD
              dask_chunks=None, like=None, fuse_func=None, align=None, datasets=None, **query):
+=======
+             dask_chunks=None, like=None, fuse_func=None, align=None, datasets=None, progress_cbk=None,
+             **query):
+>>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
         """
         Load data as an ``xarray`` object.  Each measurement will be a data variable in the :class:`xarray.Dataset`.
 
@@ -267,6 +278,10 @@ class Datacube(object):
             Optional. If provided, limit the maximum number of datasets
             returned. Useful for testing and debugging.
 
+        :param progress_cbk: Int, Int -> None
+            if supplied will be called for every file read with `files_processed_so_far, total_files`. This is
+            only applicable to non-lazy loads, ignored when using dask.
+
         :return: Requested data in a :class:`xarray.Dataset`
         :rtype: :class:`xarray.Dataset`
         """
@@ -300,6 +315,10 @@ class Datacube(object):
                                 fuse_func=fuse_func,
                                 dask_chunks=dask_chunks,
                                 skip_broken_datasets=skip_broken_datasets,
+<<<<<<< HEAD
+=======
+                                progress_cbk=progress_cbk,
+>>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
                                 **legacy_args)
 
         return apply_aliases(result, datacube_product, measurements)
@@ -366,11 +385,27 @@ class Datacube(object):
         def ds_sorter(ds):
             return sort_key(ds), getattr(ds, 'id', 0)
 
+<<<<<<< HEAD
+=======
+        def norm_axis_value(x):
+            if isinstance(x, datetime.datetime):
+                # For datetime we convert to UTC, then strip timezone info
+                # to avoid numpy/pandas warning about timezones
+                if x.tzinfo is not None:
+                    x = x.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                return numpy.datetime64(x, 'ns')
+            return x
+
+>>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
         def mk_group(group):
             dss = tuple(sorted(group, key=ds_sorter))
             # TODO: decouple axis_value from group sorted order
             axis_value = sort_key(dss[0])
+<<<<<<< HEAD
             return (axis_value, dss)
+=======
+            return (norm_axis_value(axis_value), dss)
+>>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
 
         datasets = sorted(datasets, key=group_func)
 
@@ -427,10 +462,8 @@ class Datacube(object):
         for name, coord in geobox.coordinates.items():
             result[name] = (name, coord.values, {'units': coord.units})
 
-        results = [data_func(a) for a in measurements]
-
         for measurement in measurements:
-            data = results.pop(0)
+            data = data_func(measurement)
             attrs = measurement.dataarray_attrs()
             attrs['crs'] = geobox.crs
             dims = tuple(coords.keys()) + tuple(geobox.dimensions)
@@ -463,28 +496,42 @@ class Datacube(object):
                                     chunks=needed_irr_chunks+grid_chunks,
                                     skip_broken_datasets=skip_broken_datasets)
 
-        return Datacube.create_storage(OrderedDict((dim, sources.coords[dim]) for dim in sources.dims),
-                                       geobox, measurements, data_func)
+        return Datacube.create_storage(sources.coords, geobox, measurements, data_func)
 
     @staticmethod
     def _xr_load(sources, geobox, measurements,
-                 skip_broken_datasets=False):
+                 skip_broken_datasets=False,
+                 progress_cbk=None):
 
-        data = Datacube.create_storage(OrderedDict((dim, sources.coords[dim]) for dim in sources.dims),
-                                       geobox, measurements)
+        def mk_cbk(cbk):
+            if cbk is None:
+                return None
+            n = 0
+            n_total = sum(len(x) for x in sources.values.ravel())*len(measurements)
+
+            def _cbk(*ignored):
+                nonlocal n
+                n += 1
+                return cbk(n, n_total)
+            return _cbk
+
+        data = Datacube.create_storage(sources.coords, geobox, measurements)
+        _cbk = mk_cbk(progress_cbk)
 
         for index, datasets in numpy.ndenumerate(sources.values):
             for m in measurements:
                 t_slice = data[m.name].values[index]
 
                 _fuse_measurement(t_slice, datasets, geobox, m,
-                                  skip_broken_datasets=skip_broken_datasets)
+                                  skip_broken_datasets=skip_broken_datasets,
+                                  progress_cbk=_cbk)
 
         return data
 
     @staticmethod
     def load_data(sources, geobox, measurements, resampling=None,
                   fuse_func=None, dask_chunks=None, skip_broken_datasets=False,
+                  progress_cbk=None,
                   **extra):
         """
         Load data from :meth:`group_datasets` into an :class:`xarray.Dataset`.
@@ -520,6 +567,10 @@ class Datacube(object):
 
             See the documentation on using `xarray with dask <http://xarray.pydata.org/en/stable/dask.html>`_
             for more information.
+
+        :param progress_cbk: Int, Int -> None
+            if supplied will be called for every file read with `files_processed_so_far, total_files`. This is
+            only applicable to non-lazy loads, ignored when using dask.
 
         :rtype: xarray.Dataset
 
@@ -564,7 +615,8 @@ class Datacube(object):
                                        skip_broken_datasets=skip_broken_datasets)
         else:
             return Datacube._xr_load(sources, geobox, measurements,
-                                     skip_broken_datasets=skip_broken_datasets)
+                                     skip_broken_datasets=skip_broken_datasets,
+                                     progress_cbk=progress_cbk)
 
     @staticmethod
     def measurement_data(sources, geobox, measurement, fuse_func=None, dask_chunks=None):
@@ -677,14 +729,16 @@ def fuse_lazy(datasets, geobox, measurement, skip_broken_datasets=False, prepend
 
 
 def _fuse_measurement(dest, datasets, geobox, measurement,
-                      skip_broken_datasets=False):
+                      skip_broken_datasets=False,
+                      progress_cbk=None):
     reproject_and_fuse([new_datasource(BandInfo(dataset, measurement.name)) for dataset in datasets],
                        dest,
                        geobox,
                        dest.dtype.type(measurement.nodata),
                        resampling=measurement.get('resampling_method', 'nearest'),
                        fuse_func=measurement.get('fuser', None),
-                       skip_broken_datasets=skip_broken_datasets)
+                       skip_broken_datasets=skip_broken_datasets,
+                       progress_cbk=progress_cbk)
 
 
 def get_bounds(datasets, crs):
@@ -720,6 +774,7 @@ def _calculate_chunk_sizes(sources: xarray.DataArray,
     chunk_maxsz = {dim: sz
                    for dim, sz in zip(sources.dims + geobox.dimensions,
                                       sources.shape + geobox.shape)}  # type: Dict[str, int]
+<<<<<<< HEAD
 
     # defaults: 1 for non-spatial, whole dimension for Y/X
     chunk_defaults = dict(**{dim: 1 for dim in sources.dims},
@@ -735,6 +790,23 @@ def _calculate_chunk_sizes(sources: xarray.DataArray,
             return v
         raise ValueError("Chunk should be one of int|'auto'")
 
+=======
+
+    # defaults: 1 for non-spatial, whole dimension for Y/X
+    chunk_defaults = dict(**{dim: 1 for dim in sources.dims},
+                          **{dim: -1 for dim in geobox.dimensions})   # type: Dict[str, int]
+
+    def _resolve(k, v: Optional[Union[str, int]]) -> int:
+        if v is None or v == "auto":
+            v = _resolve(k, chunk_defaults[k])
+
+        if isinstance(v, int):
+            if v < 0:
+                return chunk_maxsz[k]
+            return v
+        raise ValueError("Chunk should be one of int|'auto'")
+
+>>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
     irr_chunks = tuple(_resolve(dim, dask_chunks.get(dim)) for dim in sources.dims)
     grid_chunks = tuple(_resolve(dim, dask_chunks.get(dim)) for dim in geobox.dimensions)
 
