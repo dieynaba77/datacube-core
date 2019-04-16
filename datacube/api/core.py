@@ -1,13 +1,7 @@
 import uuid
-<<<<<<< HEAD
-from collections import OrderedDict
-from itertools import groupby
-from typing import Union, Optional, Dict, Tuple
-=======
 from itertools import groupby
 from typing import Union, Optional, Dict, Tuple
 import datetime
->>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
 
 import numpy
 import xarray
@@ -135,12 +129,8 @@ class Datacube(object):
     #: pylint: disable=too-many-arguments, too-many-locals
     def load(self, product=None, measurements=None, output_crs=None, resolution=None, resampling=None,
              skip_broken_datasets=False,
-<<<<<<< HEAD
-             dask_chunks=None, like=None, fuse_func=None, align=None, datasets=None, **query):
-=======
              dask_chunks=None, like=None, fuse_func=None, align=None, datasets=None, progress_cbk=None,
              **query):
->>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
         """
         Load data as an ``xarray`` object.  Each measurement will be a data variable in the :class:`xarray.Dataset`.
 
@@ -315,10 +305,7 @@ class Datacube(object):
                                 fuse_func=fuse_func,
                                 dask_chunks=dask_chunks,
                                 skip_broken_datasets=skip_broken_datasets,
-<<<<<<< HEAD
-=======
                                 progress_cbk=progress_cbk,
->>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
                                 **legacy_args)
 
         return apply_aliases(result, datacube_product, measurements)
@@ -385,8 +372,6 @@ class Datacube(object):
         def ds_sorter(ds):
             return sort_key(ds), getattr(ds, 'id', 0)
 
-<<<<<<< HEAD
-=======
         def norm_axis_value(x):
             if isinstance(x, datetime.datetime):
                 # For datetime we convert to UTC, then strip timezone info
@@ -396,16 +381,11 @@ class Datacube(object):
                 return numpy.datetime64(x, 'ns')
             return x
 
->>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
         def mk_group(group):
             dss = tuple(sorted(group, key=ds_sorter))
             # TODO: decouple axis_value from group sorted order
             axis_value = sort_key(dss[0])
-<<<<<<< HEAD
-            return (axis_value, dss)
-=======
             return (norm_axis_value(axis_value), dss)
->>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
 
         datasets = sorted(datasets, key=group_func)
 
@@ -774,7 +754,6 @@ def _calculate_chunk_sizes(sources: xarray.DataArray,
     chunk_maxsz = {dim: sz
                    for dim, sz in zip(sources.dims + geobox.dimensions,
                                       sources.shape + geobox.shape)}  # type: Dict[str, int]
-<<<<<<< HEAD
 
     # defaults: 1 for non-spatial, whole dimension for Y/X
     chunk_defaults = dict(**{dim: 1 for dim in sources.dims},
@@ -790,23 +769,6 @@ def _calculate_chunk_sizes(sources: xarray.DataArray,
             return v
         raise ValueError("Chunk should be one of int|'auto'")
 
-=======
-
-    # defaults: 1 for non-spatial, whole dimension for Y/X
-    chunk_defaults = dict(**{dim: 1 for dim in sources.dims},
-                          **{dim: -1 for dim in geobox.dimensions})   # type: Dict[str, int]
-
-    def _resolve(k, v: Optional[Union[str, int]]) -> int:
-        if v is None or v == "auto":
-            v = _resolve(k, chunk_defaults[k])
-
-        if isinstance(v, int):
-            if v < 0:
-                return chunk_maxsz[k]
-            return v
-        raise ValueError("Chunk should be one of int|'auto'")
-
->>>>>>> acda70e092c969b5a8549a9fc8ee9b3f43241e11
     irr_chunks = tuple(_resolve(dim, dask_chunks.get(dim)) for dim in sources.dims)
     grid_chunks = tuple(_resolve(dim, dask_chunks.get(dim)) for dim in geobox.dimensions)
 
