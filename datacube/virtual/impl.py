@@ -431,7 +431,9 @@ class Aggregate(VirtualProduct):
             return result
 
         groups = list(xr_map(grouped.pile, statistic))
-        return xarray.concat(groups, dim=dim).assign_attrs(**select_unique([g.attrs for g in groups]))
+        result = xarray.concat(groups, dim=dim).assign_attrs(**select_unique([g.attrs for g in groups]))
+        result.coords[dim] = result.coords[dim].assign_attrs(**grouped.pile.coords[dim].attrs)
+        return result 
 
 
 class Collate(VirtualProduct):

@@ -20,7 +20,8 @@ class Percentile(Transformation):
     """
 
     def __init__(self, q,
-                 minimum_valid_observations=0):
+                 minimum_valid_observations=0,
+                 not_valid_mark=None):
 
         if isinstance(q, Sequence):
             self.qs = q
@@ -28,14 +29,16 @@ class Percentile(Transformation):
             self.qs = [q]
 
         self.minimum_valid_observations = minimum_valid_observations
+        self.not_valid_mark = not_valid_mark
 
     def compute(self, data):
         # calculate masks for pixel without enough data
         for var in data.data_vars:
             nodata = getattr(data[var], 'nodata', None)
             if nodata is not None:
+                data[var].attrs['dtype'] = data[var].dtype
                 data[var] = data[var].where(data[var] > nodata)
-        not_enough  = data.count(dim='time') < self.minimum_valid_observations
+        not_enough  = np.logical_and(data.count(dim='time') < self.minimum_valid_observations, data.count(dim='time') > 0)
 
         def single(q):
             stat_func = partial(xarray.Dataset.reduce, dim='time', keep_attrs=True,
@@ -49,8 +52,17 @@ class Percentile(Transformation):
 
             def mask_not_enough(var):
                 nodata = getattr(data[var.name], 'nodata', -1)
-                var.values[not_enough[var.name]] = nodata
+                if self.not_valid_mark is not None:
+                    var.values[not_enough[var.name]] = self.not_valid_mark
+                else:
+                    var.values[not_enough[var.name]] = nodata
+                var.values[np.isnan(var.values)] = nodata
                 var.attrs['nodata'] = nodata
+                if data[var.name].attrs['dtype'] == 'int8':
+                    data_type = 'int16'
+                else:
+                    data_type = data[var.name].attrs['dtype']
+                var = var.astype(data_type)
                 return var
 
             return result.apply(mask_not_enough, keep_attrs=True).rename({var: var + '_PC_' + str(q) for var in result.data_vars})
@@ -65,17 +77,3 @@ class Percentile(Transformation):
             for q in self.qs:
                 renamed[key + '_PC_' + str(q)] = Measurement(**{**m, 'name': key + '_PC_' + str(q)})
         return renamed
-
-    #def datasets(self, input_datasets):
-    #    output_datasets = [] 
-    #    for dim, unit in self.reduction.items():
-    #        if dim != 'time':
-    #            raise("Pencentile can only reduce in time at this stage")
-    #        if unit == 'year':
-    #            year = np.unique(pd.DatetimeIndex(input_datasets.pile.time.values).year).astype('str')
-    #            self.time_stamp = np.array(year, dtype='datetime64[ns]')
-    #            print(self.time_stamp)
-    #            for year, ar in input_datasets.pile.groupby('time.year'):
-    #                output_datasets.append({'aggregate': ar})
-    #            output_datasets = xarray.DataArray(np.array(output_datasets, dtype='object'), dims=['time'], coords={'time':self.time_stamp}) 
-    #    return VirtualDatasetBox(output_datasets, input_datasets.geobox, input_datasets.product_definitions)
