@@ -9,6 +9,8 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
+import yaml
+import zlib
 
 from affine import Affine
 from typing import Optional, List, Mapping, Any, Dict, Tuple, Iterator
@@ -35,6 +37,7 @@ class Dataset(object):
     :param metadata_doc: the document (typically a parsed json/yaml)
     :param uris: All active uris for the dataset
     """
+    # pylint: disable=too-many-public-methods
 
     def __init__(self,
                  type_: 'DatasetType',
@@ -51,7 +54,10 @@ class Dataset(object):
 
         #: The document describing the dataset as a dictionary. It is often serialised as YAML on disk
         #: or inside a NetCDF file, and as JSON-B inside the database index.
-        self.metadata_doc = metadata_doc
+        self._metadata_doc = None
+
+        # we keep the metadata compressed until it is used (as the memory footprint is considerable)
+        self._metadata_doc_compressed = _compress_metadata(metadata_doc)
 
         if local_uri:
             warnings.warn(
@@ -77,6 +83,19 @@ class Dataset(object):
         self.indexed_time = indexed_time
         # When the dataset was archived. Null it not archived.
         self.archived_time = archived_time
+
+    @property
+    def metadata_doc(self):
+        if self._metadata_doc is None:
+            self._metadata_doc = _decompress_metadata(self._metadata_doc_compressed)
+            del self._metadata_doc_compressed
+
+        return self._metadata_doc
+
+    def recompress(self):
+        """ Re-compress the metadata doc after use (to reduce memory footprint). """
+        self._metadata_doc_compressed = _compress_metadata(self._metadata_doc)
+        self._metadata_doc = None
 
     @property
     def metadata_type(self) -> Optional['MetadataType']:
@@ -309,6 +328,14 @@ class Dataset(object):
         """ Return metadata document without nested lineage datasets
         """
         return without_lineage_sources(self.metadata_doc, self.metadata_type)
+
+
+def _compress_metadata(doc):
+    return zlib.compress(yaml.dump(doc).encode('utf-8'))
+
+
+def _decompress_metadata(doc):
+    return yaml.load(zlib.decompress(doc).decode('utf-8'))
 
 
 class Measurement(dict):
