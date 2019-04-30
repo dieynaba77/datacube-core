@@ -94,8 +94,22 @@ class NameResolver:
                                               input=self.construct(**input_product),
                                               **reject_keys(recipe, ['aggregate', 'input', 'group_by'])))
 
-        raise VirtualProductException("could not understand virtual product recipe: {}".format(recipe))
+        if 'aggregate' in recipe:
+            cls_name = recipe['aggregate']
+            input_product = get('input')
+            group_by = get('group_by')
 
+            if input_product is None:
+                raise VirtualProductException("no input for aggregate in {}".format(recipe))
+            if group_by is None:
+                raise VirtualProductException("no group_by for aggregate in {}".format(recipe))
+
+            return VirtualProduct(dict(aggregate=lookup(cls_name, 'aggregate'),
+                                       group_by=lookup(group_by, 'aggregate_group_by', kind='group_by'),
+                                       input=self.construct(**input_product),
+                                       **reject_keys(recipe, ['aggregate', 'input', 'group_by'])))
+
+        raise VirtualProductException("could not understand virtual product recipe: {}".format(recipe))
 
 DEFAULT_RESOLVER = NameResolver({'transform': dict(make_mask=MakeMask,
                                                    apply_mask=ApplyMask,
