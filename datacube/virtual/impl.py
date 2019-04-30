@@ -231,14 +231,11 @@ class Product(VirtualProduct):
         """ The name of an existing datacube product. """
         return self['product']
 
-    @property
-    def _kind(self):
-        """ One of product, transform, collate, juxtapose, or aggregate. """
-        candidates = [key for key in list(self)
-                      if key in ['product', 'transform', 'collate', 'juxtapose', 'aggregate']]
-        self._assert(len(candidates) == 1, "ambiguous kind")
-        return candidates[0]
 
+    def _reconstruct(self):
+        return {key: value if key not in ['fuse_func', 'dataset_predicate'] else qualified_name(value)
+                for key, value in self.items()}
+    
     # public interface
 
     def output_measurements(self, product_definitions: Dict[str, DatasetType]) -> Dict[str, Measurement]:
