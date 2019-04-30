@@ -7,6 +7,7 @@ import operator
 import subprocess
 import tempfile
 import pydash
+import re
 from collections import OrderedDict
 from functools import reduce as reduce_
 from pathlib import Path
@@ -24,7 +25,13 @@ from datacube.drivers.netcdf import (
     create_netcdf_storage_unit)
 from six import with_metaclass
 
+from rasterio.io import MemoryFile
+from rasterio.enums import Resampling
+from rasterio.shutil import copy
+
 from .models import OutputProduct
+import yaml
+from yaml import CSafeDumper as Dumper
 
 _LOG = logging.getLogger(__name__)
 _NETCDF_VARIABLE__PARAMETER_NAMES = {'zlib',
@@ -157,6 +164,8 @@ class OutputDriver(with_metaclass(RegisterDriver)):
 
         #: dict of str to dict of str to str
         self.var_attributes = var_attributes if var_attributes is not None else {}
+        self._geobox = output_product.datasets.geobox
+
 
     def close_files(self, completed_successfully: bool) -> Iterable[Path]:
         # Turn file_handles into paths
@@ -241,7 +250,7 @@ class OutputDriver(with_metaclass(RegisterDriver)):
         params.update(output_product.output_params)
         params.update(output_product.extras)
         params.update(kwargs)
-
+        
         output_path = Path(self._output_path,
                            output_product.file_path_template.format(**params))
         return output_path
@@ -258,8 +267,7 @@ class OutputDriver(with_metaclass(RegisterDriver)):
         datasets is a bunch of strings to dump, indexed on time
         sources is more structured. An x-array of lists of dataset sources, indexed on time
         """
-        geobox = output_product.datasets.geobox
-        self._geobox = geobox
+        geobox = self._geobox
         app_info = self._app_info
         sources = output_product.datasets.input_datasets()
 
@@ -282,7 +290,6 @@ class OutputDriver(with_metaclass(RegisterDriver)):
                                 app_info=app_info,
                                 valid_data=polygon_from_sources_extents(sources_, geobox))
         datasets = xr_apply(sources, _make_dataset, dtype='O')  # Store in DataArray to associate Time -> Dataset
-        datasets = datasets_to_doc(datasets)
         return datasets
 
 
@@ -312,6 +319,7 @@ class NetCDFCFOutputDriver(OutputDriver):
         all_measurement_defns = list(output_product.product.output_measurements(output_product.datasets.product_definitions).values())
 
         datasets = self._find_source_datasets(output_product, uri=output_filename.as_uri())
+        datasets = datasets_to_doc(datasets)
 
         variable_params = self._create_netcdf_var_params(output_product)
         nco = self._nco_from_sources(datasets,
@@ -387,24 +395,27 @@ class GeoTiffOutputDriver(OutputDriver):
     """
     _driver_name = 'GeoTIFF'
     valid_extensions = ['.tif', '.tiff']
-    default_profile = {
-        'compress': 'lzw',
-        'driver': 'GTiff',
-        'interleave': 'band',
-        'tiled': True
-    }
+    default_profile = {'driver': 'GTiff',
+                       'interleave': 'pixel',
+                       'tiled': True,
+                       'compress': 'DEFLATE',
+                       'zlevel': 9}
+    # don't want int8, too much trouble
     _dtype_map = {
-        'int8': 'uint8'
+        'int8': 'int16'
     }
+
+    DEFAULT_GDAL_CONFIG = {'NUM_THREADS': 1, 'GDAL_TIFF_OVR_BLOCKSIZE': 512}
 
     def __init__(self, *args, **kwargs):
         super(GeoTiffOutputDriver, self).__init__(*args, **kwargs)
 
-    def _get_dtype(self, out_prod_name, measurement_name=None):
+    def _get_dtype(self, measurement_name=None):
+        all_measurement_defns = self._output_product.product.output_measurements(self._output_product.datasets.product_definitions)
         if measurement_name:
-            dtype = self._output_products[out_prod_name].product.measurements[measurement_name]['dtype']
+            dtype = all_measurement_defns[measurement_name]['dtype']
         else:
-            dtypes = set(m['dtype'] for m in self._output_products[out_prod_name].product.measurements.values())
+            dtypes = set(m['dtype'] for m in all_measurement_defns.values())
             if len(dtypes) == 1:
                 dtype = dtypes.pop()
             else:
@@ -412,50 +423,62 @@ class GeoTiffOutputDriver(OutputDriver):
                                        'For GeoTIFF output they must ' % out_prod_name)
         return self._dtype_map.get(dtype, dtype)
 
-    def _get_nodata(self, prod_name, measurement_name=None):
-        dtype = self._get_dtype(prod_name, measurement_name)
+    def _get_nodata(self, measurement_name=None):
         if measurement_name:
-            nodata = self._output_products[prod_name].product.measurements[measurement_name]['nodata']
+            all_measurement_defns = self._output_product.product.output_measurements(self._output_product.datasets.product_definitions)
+            nodata = all_measurement_defns[measurement_name]['nodata']
         else:
-            nodatas = set(m['nodata'] for m in self._output_products[prod_name].product.measurements.values())
+            nodatas = set(m['nodata'] for m in all_measurement_defns.values())
             if len(nodatas) == 1:
                 nodata = nodatas.pop()
             else:
                 raise StatsOutputError('Not all nodata values for output product "%s" are the same. '
                                        'Must all match for geotiff output' % prod_name)
-        if dtype == 'uint8' and nodata < 0:
-            # Convert to uint8 for Geotiff
-            return 255
-        else:
-            return nodata
+        return nodata
 
     def open_output_files(self):
-        for prod_name, stat in self._output_products.items():
-            num_measurements = len(stat.product.measurements)
-            if num_measurements == 0:
-                raise ValueError('No measurements to record for {}.'.format(prod_name))
-            elif num_measurements > 1 and 'var_name' in stat.file_path_template:
-                # Output each statistic product into a separate single band geotiff file
-                tmp_filenames = [self._open_single_band_geotiff(prod_name, stat, measurement_name)
-                                 for measurement_name, measure_def in stat.product.measurements.items()]
+        prod_name = self._output_product.name
+        all_measurement_defns = self._output_product.product.output_measurements(self._output_product.datasets.product_definitions)
+        num_measurements = len(all_measurement_defns.values())
+        if num_measurements == 0:
+            raise ValueError('No measurements to record for {}.'.format(prod_name))
+        elif num_measurements > 1 and 'var_name' in self._output_product.file_path_template:
+            # Output each statistic product into a separate single band geotiff file
+            tmp_filenames = [self._open_single_band_geotiff(prod_name, self._output_product, measurement_name)
+                             for measurement_name, measure_def in all_measurement_defns.items()]
 
-                yaml_filename = str(self._generate_output_filename(stat, var_name='').with_suffix('.yaml'))
-                self.write_yaml(stat, tmp_filenames, yaml_filename, multiband=False)
+            #don't want anything other than letter or number at the end of filename 
+            pattern = re.compile(r'[^a-zA-Z0-9]+.yaml$')
 
-            else:
-                # Output all statistics into a single geotiff file, with as many bands
-                # as there are output statistic products
-                output_filename = self._prepare_output_file(stat)
+            yaml_filename = self._generate_output_filename(self._output_product, var_name='').with_suffix('.yaml')
+            aws_yaml_filename = pattern.sub('.yaml', str(yaml_filename))
+            #create yaml for aws
+            self.write_yaml(self._output_product, tmp_filenames, aws_yaml_filename, multiband=False, aws=True)
 
-                self.write_yaml(stat, [output_filename] * len(stat.product.measurements))
+            yaml_filename = pattern.sub('.yaml', yaml_filename.name)
+            yaml_filename = str(Path(self._output_path, yaml_filename))
+            #create yaml for local storage
+            self.write_yaml(self._output_product, tmp_filenames, yaml_filename, multiband=False, aws=False)
 
-                dest_fh = self._open_geotiff(prod_name, None, output_filename, num_measurements)
+        else:
+            _LOG.error('Cannot write multiple bands in a single geotiff!')
+            
 
-                for band, (measurement_name, measure_def) in enumerate(stat.product.measurements.items(), start=1):
-                    self._set_band_metadata(dest_fh, measurement_name, band=band)
-                self._output_file_handles[prod_name] = dest_fh
+    def close_files(self, completed_successfully: bool) -> Iterable[Path]:
+        # Turn file_handles into paths
+        written_paths = list(_walk_dict(self._output_file_handles, lambda fh: fh))
 
-    def write_yaml(self, stat: OutputProduct, tmp_filenames: List[Path], yaml_filename=None, multiband=True):
+        # Rename to final filename
+        if completed_successfully:
+            destinations = [self.output_filename_tmpname[path] for path in written_paths]
+            for tmp, dest in zip(written_paths, destinations):
+                atomic_rename(tmp, dest)
+
+            return destinations
+        else:
+            return written_paths
+
+    def write_yaml(self, output_product: OutputProduct, tmp_filenames: List[Path], yaml_filename=None, multiband=True, aws=False):
         output_filenames = [self.output_filename_tmpname[tmp_filename]
                             for tmp_filename in tmp_filenames]
 
@@ -467,120 +490,103 @@ class GeoTiffOutputDriver(OutputDriver):
                 return index + 1
             return 1
 
-        band_uris = {name: {'layer': layer(index), 'path': uris[index]}
-                     for index, name in enumerate(stat.product.measurements)}
-
-        datasets = self._find_source_datasets(stat, uri=None, band_uris=band_uris)
-
+        all_measurement_defns = output_product.product.output_measurements(output_product.datasets.product_definitions)
+        if aws:
+            band_uris = {name: {'layer': layer(index), 'path': output_filenames[index].name}
+                         for index, name in enumerate(all_measurement_defns)}
+        else:
+            band_uris = {name: {'layer': layer(index), 'path': uris[index]}
+                         for index, name in enumerate(all_measurement_defns)}
+        datasets = self._find_source_datasets(output_product, uri=None, band_uris=band_uris)
         if yaml_filename is None:
             yaml_filename = str(output_filenames[0].with_suffix('.yaml'))
 
         # Write to Yaml
         if len(datasets) == 1:  # I don't think there should ever be more than 1 dataset in here...
-            _LOG.info('writing dataset yaml for %s to %s', stat, yaml_filename)
-            with fileutils.atomic_save(yaml_filename) as yaml_dst:
-                yaml_dst.write(datasets.values[0])
+            _LOG.info('writing dataset yaml for %s to %s', output_product, yaml_filename)
+            if aws:
+                datasets.values[0].metadata_doc['lineage'] = {'source_datasets': {}}
+                with open(yaml_filename, 'w') as yaml_dst:
+                    yaml.dump(datasets.values[0].metadata_doc, yaml_dst, default_flow_style=False, Dumper=Dumper)
+            else:
+                datasets = datasets_to_doc(datasets)
+                with fileutils.atomic_save(yaml_filename) as yaml_dst:
+                    yaml_dst.write(datasets.values[0])
+
         else:
             _LOG.error('Unexpected more than 1 dataset %r being written at once, '
                        'investigate!', datasets)
 
-    def _open_single_band_geotiff(self, prod_name, stat, measurement_name=None):
-        output_filename = self._prepare_output_file(stat, var_name=measurement_name)
-        dest_fh = self._open_geotiff(prod_name, measurement_name, output_filename)
-        self._set_band_metadata(dest_fh, measurement_name)
-        self._output_file_handles.setdefault(prod_name, {})[measurement_name] = dest_fh
+    def _open_single_band_geotiff(self, prod_name, output_product, measurement_name=None):
+        output_filename = self._prepare_output_file(output_product, var_name=measurement_name)
+        self._output_file_handles.setdefault(prod_name, {})[measurement_name] = output_filename
+        self.update_profile(measurement_name)
         return output_filename
 
-    def _set_band_metadata(self, dest_fh, measurement_name, band=1):
-        start_date, end_date = self._task.time_period
-        dest_fh.update_tags(band,
-                            source_product=self._task.source_product_names(),
-                            start_date='{:%Y-%m-%d}'.format(start_date),
-                            end_date='{:%Y-%m-%d}'.format(end_date),
-                            name=measurement_name)
-
-    def _open_geotiff(self, prod_name, measurement_name, output_filename, num_bands=1):
+    def update_profile(self, measurement_name, num_bands=1):
         profile = self.default_profile.copy()
-        dtype = self._get_dtype(prod_name, measurement_name)
-        nodata = self._get_nodata(prod_name, measurement_name)
+        dtype = self._get_dtype(measurement_name)
+        nodata = self._get_nodata(measurement_name)
         x_block_size = self._storage['chunking']['x'] if 'x' in self._storage['chunking'] else \
             self._storage['chunking']['longitude']
         y_block_size = self._storage['chunking']['y'] if 'y' in self._storage['chunking'] else \
             self._storage['chunking']['latitude']
         profile.update({
-            'blockxsize': x_block_size,
-            'blockysize': y_block_size,
-
-            'dtype': dtype,
-            'nodata': nodata,
+            'predictor': self._storage['predictor'],
+            'copy_src_overviews': True,
             'width': self._geobox.width,
             'height': self._geobox.height,
             'transform': self._geobox.affine,
             'crs': self._geobox.crs.crs_str,
+            'dtype': dtype,
+            'nodata': nodata,
+            'blockxsize': x_block_size, 
+            'blockysize': y_block_size,
             'count': num_bands
         })
-        _LOG.debug("Opening %s for writing.", output_filename)
-        dest_fh = rasterio.open(str(output_filename), mode='w', **profile)
-        dest_fh.update_tags(created=self._app_info)
-        return dest_fh
+        self.dst_kwargs = profile
 
-    def write_data(self, prod_name, measurement_name, chunk, values):
-        super(GeoTiffOutputDriver, self).write_data(prod_name, measurement_name, chunk, values)
-
+    def write_data(self, values):
+        all_measurement_defns = self._output_product.product.output_measurements(self._output_product.datasets.product_definitions)
+        prod_name = self._output_product.name
         prod = self._output_file_handles[prod_name]
-        if isinstance(prod, dict):
-            output_fh = prod[measurement_name]
-            band_num = 1
-        else:
-            output_fh = prod
-            stat = self._output_products[prod_name]
-            band_num = list(stat.product.measurements).index(measurement_name) + 1
 
-        t, y, x = chunk
-        window = ((y.start, y.stop), (x.start, x.stop))
+        def cogeo(values, output_fh, indexes, overview_sampling=None, overview_level=None):
+            meta = {}
+            meta.update(**self.dst_kwargs)
+            meta.pop('compress', None)
+            meta['stats'] = True
 
-        dtype = self._get_dtype(prod_name, measurement_name)
+            with rasterio.Env(**self.DEFAULT_GDAL_CONFIG):
+                with MemoryFile() as memfile:
+                    with memfile.open(**meta) as mem:
+                        mem.write(values, indexes=indexes)
+                        if overview_resampling is not None:
+                            overviews = [2 ** j for j in range(1, overview_level + 1)]
+                            mem.build_overviews(overviews, Resampling[overview_resampling])
+                            mem.update_tags(
+                                OVR_RESAMPLING_ALG=Resampling[overview_resampling].name.upper()
+                            )
+                        else:
+                            _LOG.warn('Not producing overview')
+                        copy(mem, output_fh, **self.dst_kwargs)
 
-        output_fh.write(values.astype(dtype), indexes=band_num, window=window)
-
+        for var in values.data_vars:
+            if isinstance(prod, dict):
+                output_fh = prod[var]
+                band_num = 1
+            else:
+                output_fh = prod
+                band_num = list(all_measurement_defns).index(var) + 1
+            dtype = self._get_dtype(var)
+            overview_resampling = self._storage.get('resampling', None)
+            overview_level = self._storage.get('overview_level', 5)
+            cogeo(values[var].data.astype(dtype), output_fh,
+                  [band_num], overview_resampling, overview_level)
+                
     def write_global_attributes(self, attributes):
         for dest in self._output_file_handles.values():
             dest.update_tags(**attributes)
-
-
-class ENVIBILOutputDriver(GeoTiffOutputDriver):
-    """
-    Writes out a tif file (with an incorrect extension), then converts it to another GDAL format.
-    """
-    _driver_name = 'ENVI BIL'
-    valid_extensions = ['.bil']
-
-    def close_files(self, completed_successfully):
-        paths = super(ENVIBILOutputDriver, self).close_files(completed_successfully)
-
-        if completed_successfully:
-            for filename in paths:
-                self.tif_to_envi(filename)
-
-    @staticmethod
-    def tif_to_envi(source_file):
-        # Rename to .tif
-        tif_file = source_file.with_suffix('.tif')
-        source_file.replace(tif_file)
-
-        # Convert and replace
-        dest_file = source_file
-        gdal_translate_command = ['gdal_translate', '--debug', 'ON', '-of', 'ENVI', '-co', 'INTERLEAVE=BIL',
-                                  str(tif_file), str(dest_file)]
-
-        _LOG.debug('Executing: %s', ' '.join(gdal_translate_command))
-
-        try:
-            subprocess.check_output(gdal_translate_command, stderr=subprocess.STDOUT)
-
-            tif_file.unlink()
-        except subprocess.CalledProcessError as cpe:
-            _LOG.error('Error running gdal_translate: %s', cpe.output)
 
 
 class OutputDriverResult(Exception):
@@ -589,79 +595,11 @@ class OutputDriverResult(Exception):
         self.result = result
 
 
-class XarrayOutputDriver(OutputDriver):
-    """ Save results as `xarray.Dataset`s. """
-
-    _driver_name = 'xarray'
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.result = {}
-
-    def close_files(self, completed_successfully):
-        raise OutputDriverResult(self.result)
-
-    def open_output_files(self):
-        for prod_name, stat in self._output_products.items():
-            datasets = self._find_source_datasets(stat)
-            all_measurement_defns = list(stat.product.measurements.values())
-            self.create_result_storage(prod_name, datasets, all_measurement_defns)
-
-    def create_result_storage(self, prod_name, datasets, measurements):
-        coordinates = self.create_coords(datasets)
-        shape = [coordinates['time'].shape[0], coordinates['y'].shape[0], coordinates['x'].shape[0]]
-        variables = self.create_variables(datasets.dims+self._geobox.dimensions, measurements, shape)
-        self.result[prod_name] = xarray.Dataset(variables, coords=coordinates)
-
-    def create_coords(self, datasets):
-        coordinates = OrderedDict((name, coord.values)
-                                  for name, coord in datasets.coords.items())
-        for name, coord in self._geobox.coordinates.items():
-            coordinates.update({name: coord.values})
-        return coordinates
-
-    def create_variables(self, dims, measurements, shape):
-        variables = OrderedDict()
-        for variable in measurements:
-            nodata = numpy.array([variable['nodata']]*(shape[0]*shape[1]*shape[2]),
-                                 dtype=variable['dtype']).reshape(shape)
-            variables.update({variable['name']: (dims, nodata)})
-        return variables
-
-    def _handle_to_path(self, file_handle) -> Path:
-        return Path(file_handle.filepath())
-
-    def write_chunk(self, prod_name, chunk, result):
-        for var_name, var in result.data_vars.items():
-            shape = var.shape
-            dims = var.dims
-            # sanity check
-            # everything match -> fine
-            # with/without time dimension -> fix it
-            if shape == self.result[prod_name][var_name].shape and dims == self.result[prod_name][var_name].dims:
-                pass
-            elif 'time' not in dims:
-                shape = self.result[prod_name][var_name].shape
-                dims = self.result[prod_name][var_name].dims
-            elif 'time' in dims:
-                self.result[prod_name].coords['time'] = result.coords['time']
-            else:
-                raise StatsOutputError('Kill me...cannot handle any more\n')
-            time_dim = self.result[prod_name].coords['time'].shape[0]
-            self.result[prod_name][var_name][(slice(0, time_dim, None),) + chunk[1:]] = var.values
-
-    def write_data(self, prod_name, measurement_name, chunk, values):
-        pass
-
-    def write_global_attributes(self, attributes):
-        pass
-
-
 class TestOutputDriver(OutputDriver):
     def write_global_attributes(self, attributes):
         pass
 
-    def write_data(self, prod_name, measurement_name, chunk, values):
+    def write_data(self, values):
         pass
 
     def open_output_files(self):

@@ -117,4 +117,4 @@ definitions:
                 type: object
             driver:
                 type: string
-        additionalProperties: false
+        additionalProperties: true

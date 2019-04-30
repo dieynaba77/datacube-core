@@ -92,15 +92,12 @@ class MangroveCC(Transformation):
     def compute(self, data):
         var_name = list(data.data_vars.keys())[0]
 
-        rast_data = data[var_name].where(data[var_name] > 0, -9999)
-        print('before raster', np.where(rast_data.data == -9999))
-        rast_data = rast_data.where(self.generate_rasterize(data[var_name]) == 1, -1)
-        print('after raster', np.where(rast_data.data == -9999))
+        rast_data = data[var_name].where(self.generate_rasterize(data[var_name]) == 1, -9999)
 
         cover_extent = rast_data.copy(True)
         cover_extent.data = np.zeros(cover_extent.shape, dtype='int16') - 1  
         cover_extent.data[rast_data.data > self.thresholds[0]] = 1
-        cover_extent.data[rast_data.data == -9999] = 0 
+        cover_extent.data[np.logical_and(rast_data.data > -9999, data[var_name].data == -2)] = 0 
 
         cover_type = rast_data.copy(True)
         cover_type.data = np.zeros(cover_type.shape, dtype='int16') - 1
@@ -108,7 +105,7 @@ class MangroveCC(Transformation):
         for s_t in self.thresholds:
             cover_type.data[rast_data.data > s_t] = level_threshold
             level_threshold += 1
-        cover_type.data[rast_data.data == -9999] = 0 
+        cover_type.data[np.logical_and(rast_data.data > -9999, data[var_name].data == -2)] = 0 
 
         outputs = {}
         outputs[self.bands[0]] = cover_extent
